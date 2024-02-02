@@ -5,58 +5,92 @@ import pexpect
 import time
 import shutil
 import os
+import re
+
+TARGET_WORLD_NAME = os.getenv("WORLD_NAME", "world")
+TARGET_WORLD_RADIUS = int(os.getenv("WORLD_RADIUS", 1000))
+TARGET_ADD_SEED = os.getenv("TARGET_ADD_SEED", "true").lower() == "true"
+TARGET_ADD_RADIUS = os.getenv("TARGET_ADD_RADIUS", "true").lower() == "true"
+
+BASE_DIR = os.getenv("BASE_DIR", "/base")
+TARGET_DIR = os.getenv("TARGET_DIR", "/output")
+TEMP_DIR = os.getenv("TEMP_DIR", "/tmp/world")
+
+JAVA_XMX = os.getenv("JAVA_XMX", "4096M")
+JAVA_XMS = os.getenv("JAVA_XMS")
+
+WORLD_SEED = "0"
+
+if TARGET_WORLD_RADIUS is None or TARGET_WORLD_NAME is None:
+    print("Not all arguments given")
+    exit(1)
 
 
 def chdir_base():
-    abspath = os.path.abspath(sys.argv[0])
-    dname = os.path.dirname(abspath)
-    os.chdir(dname)
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    os.chdir(TEMP_DIR)
 
 
 def prepare():
     cleanup()
-    shutil.copytree("server", "temp")
+    shutil.copytree(BASE_DIR, TEMP_DIR)
 
 
 def cleanup():
-    if os.path.exists("temp"):
-        shutil.rmtree("temp")
+    if os.path.exists(TEMP_DIR):
+        shutil.rmtree(TEMP_DIR)
 
 
-def saveWorld(name):
+def saveWorld(name, seed=None):
+    print("Copying world to output...")
     chdir_base()
-    if not os.path.exists("output"):
-        os.mkdir("output")
-    shutil.copytree("temp/world", "output/" + name)
+
+    final_target_dirname = name
+    if TARGET_ADD_RADIUS:
+        final_target_dirname += "_r" + str(TARGET_WORLD_RADIUS)
+
+    if seed is not None and TARGET_ADD_SEED:
+        final_target_dirname += "_" + str(seed)
+
+    if not os.path.exists(TARGET_DIR):
+        os.makedirs(TARGET_DIR, exist_ok=True)
+    shutil.copytree(os.path.join(TEMP_DIR, "world"), os.path.join(TARGET_DIR, final_target_dirname))
+    print("done.")
 
 
-def runServerAndGenerate(radius=1500):
-    os.chdir("temp")
-    child = pexpect.spawn('java -Xms2048M -Xmx4096M -jar server.jar --nojline --log-strip-color --nogui')
+def runServerAndGenerate(radius=1500, xmx="2048M", xms=None):
+    if xms is None:
+        xms = xmx
+
+    os.chdir(TEMP_DIR)
+    child = pexpect.spawn('java -Xms' + xms + ' -Xmx' + xmx + ' -jar server.jar --nogui --nojline')
     child.logfile = sys.stdout.buffer
-    child.expect('Done \(', timeout=None)
-    child.sendline('fcp start %i world' % radius)
-    child.expect(r'Generating\sChunks:\s(\d+)\sof\s\1',
-                 timeout=None)  # regex is ugly, but works.
+    child.expect(r'Done \(', timeout=None)
+    child.sendline('seed')
+    child.expect(r'Seed: \[.*\]')
+    seed_line = child.after
+    child.sendline('chunky spawn')
+    child.sendline('chunky shape circle')
+    child.sendline('chunky radius ' + str(radius))
+    child.sendline('chunky start')
+    child.expect(r'\[Chunky\] Task finished for ', timeout=None)  # regex is ugly, but works.
     child.sendline('stop')
     child.expect('Stopping server', timeout=None)
     child.expect(pexpect.EOF, timeout=None)
 
+    # remove console colors
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    seed_result = re.search(r'Seed: \[(-?\d+)\]', ansi_escape.sub('', seed_line.decode('utf-8')))
+    seed = None
+    if seed_result is not None and len(seed_result.groups()) == 1:
+        seed = seed_result.group(1)
+        print("Found seed:", seed)
 
-def generateWorld(name, radius=1500):
-    chdir_base()
-    prepare()
-    runServerAndGenerate(radius)
-    saveWorld(name)
+    return seed
 
 
-generateWorld("world2", 2000)
-generateWorld("world3", 2000)
-generateWorld("world4", 2000)
-generateWorld("world5", 2000)
-generateWorld("world6", 2000)
-generateWorld("world7", 2000)
-generateWorld("world8", 2000)
-generateWorld("world9", 2000)
-generateWorld("world10", 2000)
+chdir_base()
+prepare()
+seed = runServerAndGenerate(radius=TARGET_WORLD_RADIUS, xmx=JAVA_XMX, xms=JAVA_XMS)
+saveWorld(TARGET_WORLD_NAME, seed)
 cleanup()
